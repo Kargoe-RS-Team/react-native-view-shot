@@ -41,6 +41,18 @@ RCT_EXPORT_METHOD(releaseCapture:(nonnull NSString *)uri)
   }
 }
 
++ (UIImage *) imageWithView:(UIView *)view
+{
+  UIGraphicsBeginImageContextWithOptions(view.bounds.size, view.opaque, 0.0);
+  [view.layer renderInContext:UIGraphicsGetCurrentContext()];
+  
+  UIImage * img = UIGraphicsGetImageFromCurrentImageContext();
+  
+  UIGraphicsEndImageContext();
+  
+  return img;
+}
+
 RCT_EXPORT_METHOD(captureRef:(nonnull NSNumber *)target
                   withOptions:(NSDictionary *)options
                   resolve:(RCTPromiseResolveBlock)resolve
@@ -87,8 +99,12 @@ RCT_EXPORT_METHOD(captureRef:(nonnull NSNumber *)target
       rendered = view;
     }
 
+    double captureScale = 0; // default use screen
+    
     if (size.width < 0.1 || size.height < 0.1) {
       size = snapshotContentContainer ? scrollView.contentSize : view.bounds.size;
+    } else {
+      captureScale = 1; // if user specifies size, use 1:1 scale or else our image is enlarged by the device screen scale factor
     }
     if (size.width < 0.1 || size.height < 0.1) {
       reject(RCTErrorUnspecified, [NSString stringWithFormat:@"The content size must not be zero or negative. Got: (%g, %g)", size.width, size.height], nil);
@@ -105,18 +121,31 @@ RCT_EXPORT_METHOD(captureRef:(nonnull NSNumber *)target
       scrollView.frame = CGRectMake(0, 0, scrollView.contentSize.width, scrollView.contentSize.height);
     }
 
-    UIGraphicsBeginImageContextWithOptions(size, NO, 0);
+    double t1 = CACurrentMediaTime();
+    
+    UIGraphicsBeginImageContextWithOptions(size, NO, captureScale);
     
     success = [rendered drawViewHierarchyInRect:(CGRect){CGPointZero, size} afterScreenUpdates:YES];
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
-
+    
+#undef printf
+    
+    if (!success) { // if failed try an older way (iphone6 / ipad bug:  https://stackoverflow.com/questions/25873234/snapshotviewafterscreenupdates-glitch-on-ios-8
+      image = [RNViewShot imageWithView:rendered];
+      if (image) success = YES;
+      if (!image) printf("backup screen shot also failed, play sad wha wha wha sound\n");
+    }
     if (snapshotContentContainer) {
+      printf("restoring scroll and frame\n");
       // Restore scroll & frame
       scrollView.contentOffset = savedContentOffset;
       scrollView.frame = savedFrame;
     }
-
+ 
+    double t2 = CACurrentMediaTime();
+    printf("time to capture screen = %f\n", t2-t1);
+    
     if (!success) {
       reject(RCTErrorUnspecified, @"The view cannot be captured. drawViewHierarchyInRect was not successful. This is a potential technical or security limitation.", nil);
       return;
@@ -128,7 +157,7 @@ RCT_EXPORT_METHOD(captureRef:(nonnull NSNumber *)target
     }
 
     // Convert image to data (on a background thread)
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
 
       NSData *data;
       if ([format isEqualToString:@"jpg"]) {
